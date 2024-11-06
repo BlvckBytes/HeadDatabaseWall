@@ -6,10 +6,13 @@ import com.comphenix.protocol.events.ListenerPriority;
 import com.comphenix.protocol.events.PacketAdapter;
 import com.comphenix.protocol.events.PacketEvent;
 import com.comphenix.protocol.wrappers.EnumWrappers;
+import com.comphenix.protocol.wrappers.WrappedBlockData;
 import me.arcaniax.hdb.object.head.Head;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.BlockFace;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -17,8 +20,11 @@ import org.bukkit.event.player.*;
 import org.bukkit.plugin.Plugin;
 
 import javax.annotation.Nullable;
+import java.lang.reflect.Field;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
 
@@ -31,10 +37,12 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
   private final Map<UUID, HeadWallSession> sessionByPlayerId;
 
   private final ProtocolManager protocolManager;
+  private final Logger logger;
 
   private long lastProcessedInteractionStamp;
+  private final Field blockDataHandleField;
 
-  public HeadWallSessionRegistry(Plugin plugin, ProtocolManager protocolManager) {
+  public HeadWallSessionRegistry(Plugin plugin, ProtocolManager protocolManager, Logger logger) throws Exception {
     super(
       plugin, ListenerPriority.HIGHEST,
       PacketType.Play.Client.BLOCK_DIG,
@@ -42,8 +50,39 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
       PacketType.Play.Client.USE_ITEM
     );
 
+    var blockDataClass = Class.forName(Bukkit.getServer().getClass().getPackageName() + ".block.data.CraftBlockData");
+
+    Field handleField = null;
+
+    for (var field : blockDataClass.getDeclaredFields()) {
+      if (!field.getType().getPackageName().startsWith("net.minecraft"))
+        continue;
+
+      if (handleField != null)
+        throw new IllegalStateException("Found multiple candidates for the handle-field within " + blockDataClass);
+
+      handleField = field;
+    }
+
+    if (handleField == null)
+      throw new IllegalStateException("Could not locate the handle-field within " + blockDataClass);
+
+    this.blockDataHandleField = handleField;
+    this.blockDataHandleField.setAccessible(true);
+
     this.sessionByPlayerId = new HashMap<>();
     this.protocolManager = protocolManager;
+    this.logger = logger;
+  }
+
+  public WrappedBlockData convertBlockData(BlockData blockData) {
+    try {
+      return WrappedBlockData.fromHandle(blockDataHandleField.get(blockData));
+    } catch (Exception e) {
+      logger.log(Level.SEVERE, "Could not convert block-data from NMS to ProtocolLib-wrapped", e);
+      // Rather fail safely, as these changes are only fake on the client-side anyways
+      return WrappedBlockData.createData(Material.AIR);
+    }
   }
 
   @Override
@@ -175,7 +214,7 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     if (sessionByPlayerId.containsKey(playerId))
       return null;
 
-    var session = new HeadWallSession(player, heads, WALL_PARAMETER, protocolManager);
+    var session = new HeadWallSession(player, heads, WALL_PARAMETER, this::convertBlockData, protocolManager);
 
     this.sessionByPlayerId.put(playerId, session);
     return session;

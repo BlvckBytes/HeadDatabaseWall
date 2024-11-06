@@ -27,7 +27,7 @@ public class HeadDatabaseWallPlugin extends JavaPlugin {
       var headDatabase = new HeadDatabaseAPI();
 
       protocolManager = ProtocolLibrary.getProtocolManager();
-      sessionRegistry = new HeadWallSessionRegistry(this, protocolManager);
+      sessionRegistry = new HeadWallSessionRegistry(this, protocolManager, logger);
       protocolManager.addPacketListener(sessionRegistry);
 
       Bukkit.getServer().getPluginManager().registerEvents(sessionRegistry, this);

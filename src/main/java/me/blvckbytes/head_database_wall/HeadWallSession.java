@@ -3,6 +3,7 @@ package me.blvckbytes.head_database_wall;
 import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.ProtocolManager;
 import com.comphenix.protocol.wrappers.BlockPosition;
+import com.comphenix.protocol.wrappers.WrappedBlockData;
 import com.comphenix.protocol.wrappers.WrappedRegistrable;
 import com.comphenix.protocol.wrappers.nbt.NbtFactory;
 import it.unimi.dsi.fastutil.longs.Long2ObjectAVLTreeMap;
@@ -11,12 +12,14 @@ import me.arcaniax.hdb.object.head.Head;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.BlockFace;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Rotatable;
 import org.bukkit.entity.Player;
 
 import javax.annotation.Nullable;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 
 public class HeadWallSession {
 
@@ -47,12 +50,20 @@ public class HeadWallSession {
   private final int numberOfPages;
   private int currentPage;
 
+  private final Function<BlockData, WrappedBlockData> blockDataConverter;
   private final ProtocolManager protocolManager;
 
-  public HeadWallSession(Player viewer, List<Head> heads, HeadWallParameters parameters, ProtocolManager protocolManager) {
+  public HeadWallSession(
+    Player viewer,
+    List<Head> heads,
+    HeadWallParameters parameters,
+    Function<BlockData, WrappedBlockData> blockDataConverter,
+    ProtocolManager protocolManager
+  ) {
     this.viewer = viewer;
     this.parameters = parameters;
     this.heads = heads;
+    this.blockDataConverter = blockDataConverter;
     this.protocolManager = protocolManager;
 
     this.headByLocationHash = new Long2ObjectAVLTreeMap<>();
@@ -210,6 +221,18 @@ public class HeadWallSession {
     return headByLocationHash.get(fastCoordinateHash(target));
   }
 
+  private void sendBlockChange(Location location, BlockData blockData) {
+    var packet = protocolManager.createPacket(PacketType.Play.Server.BLOCK_CHANGE);
+
+    packet.getBlockPositionModifier().write(0, new BlockPosition(
+      location.getBlockX(), location.getBlockY(), location.getBlockZ()
+    ));
+
+    packet.getBlockData().write(0, blockDataConverter.apply(blockData));
+
+    protocolManager.sendServerPacket(viewer, packet);
+  }
+
   public void onTryBlockManipulate(Location location) {
     var restoreRoutine = restoreRoutineByLocationHash.get(fastCoordinateHash(location));
 
@@ -218,7 +241,7 @@ public class HeadWallSession {
 
     // Restore the real block, as no event will be called (see reasoning for ack)
     else
-      viewer.sendBlockChange(location, location.getBlock().getBlockData());
+      sendBlockChange(location, location.getBlock().getBlockData());
   }
 
   public void show() {
@@ -227,11 +250,11 @@ public class HeadWallSession {
 
       var wallTypeBlockData = parameters.wallType().createBlockData();
       for (var wallLocation : wallLocations)
-        captureRestoreRoutineAndExecute(wallLocation, () -> viewer.sendBlockChange(wallLocation, wallTypeBlockData));
+        captureRestoreRoutineAndExecute(wallLocation, () -> sendBlockChange(wallLocation, wallTypeBlockData));
 
       var airBlockData = Material.AIR.createBlockData();
       for (var viewingBoxLocation : viewingBoxLocations)
-        captureRestoreRoutineAndExecute(viewingBoxLocation, () -> viewer.sendBlockChange(viewingBoxLocation, airBlockData));
+        captureRestoreRoutineAndExecute(viewingBoxLocation, () -> sendBlockChange(viewingBoxLocation, airBlockData));
     }
 
     didDrawHeads = true;
@@ -240,7 +263,7 @@ public class HeadWallSession {
       var headIndex = currentPage * pageSize + slotIndex;
 
       if (headIndex >= heads.size()) {
-        viewer.sendBlockChange(locationAndHash.location, Material.AIR.createBlockData());
+        sendBlockChange(locationAndHash.location, Material.AIR.createBlockData());
         headByLocationHash.remove(locationAndHash.hash);
         return;
       }
@@ -278,7 +301,7 @@ public class HeadWallSession {
       packet.getNbtModifier().write(0, rootCompound);
 
       captureRestoreRoutineAndExecute(locationAndHash.location, () -> {
-        viewer.sendBlockChange(locationAndHash.location, headBlockData);
+        sendBlockChange(locationAndHash.location, headBlockData);
         protocolManager.sendServerPacket(viewer, packet);
       });
     });
@@ -289,10 +312,10 @@ public class HeadWallSession {
       didInitializeAuxiliaryLocations = false;
 
       for (var wallLocation : wallLocations)
-        viewer.sendBlockChange(wallLocation, wallLocation.getBlock().getBlockData());
+        sendBlockChange(wallLocation, wallLocation.getBlock().getBlockData());
 
       for (var viewingBoxLocation : viewingBoxLocations)
-        viewer.sendBlockChange(viewingBoxLocation, viewingBoxLocation.getBlock().getBlockData());
+        sendBlockChange(viewingBoxLocation, viewingBoxLocation.getBlock().getBlockData());
     }
 
     if (didDrawHeads) {
@@ -300,7 +323,7 @@ public class HeadWallSession {
 
       forEachHeadLocationTopLeftToBottomRight((slotIndex, locationAndHash) -> {
         var location = locationAndHash.location;
-        viewer.sendBlockChange(location, location.getBlock().getBlockData());
+        sendBlockChange(location, location.getBlock().getBlockData());
       });
     }
   }
