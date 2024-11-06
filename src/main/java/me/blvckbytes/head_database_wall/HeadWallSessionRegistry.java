@@ -5,14 +5,18 @@ import com.comphenix.protocol.ProtocolManager;
 import com.comphenix.protocol.events.ListenerPriority;
 import com.comphenix.protocol.events.PacketAdapter;
 import com.comphenix.protocol.events.PacketEvent;
+import com.comphenix.protocol.wrappers.BlockPosition;
 import com.comphenix.protocol.wrappers.EnumWrappers;
 import com.comphenix.protocol.wrappers.WrappedBlockData;
+import com.comphenix.protocol.wrappers.WrappedRegistrable;
+import com.comphenix.protocol.wrappers.nbt.NbtFactory;
 import me.arcaniax.hdb.object.head.Head;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.BlockFace;
 import org.bukkit.block.data.BlockData;
+import org.bukkit.block.data.Directional;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -26,7 +30,7 @@ import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
-public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
+public class HeadWallSessionRegistry extends PacketAdapter implements Listener, HeadWallCommunicator {
 
   private static final long INTERACTION_MIN_DISTANCE_MS = 250; // Up to 4 heads/second will suffice, I believe, x)
   private static final double REMOVAL_DISTANCE_BLOCKS = 10;
@@ -47,7 +51,13 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
       plugin, ListenerPriority.HIGHEST,
       PacketType.Play.Client.BLOCK_DIG,
       PacketType.Play.Client.USE_ITEM_ON,
-      PacketType.Play.Client.USE_ITEM
+      PacketType.Play.Client.USE_ITEM,
+
+      // Blocking all packets this listener is filtering for when in a session, as to avoid
+      // unintentional updates due to events on the server, caused externally.
+      PacketType.Play.Server.BLOCK_CHANGE,
+      PacketType.Play.Server.MULTI_BLOCK_CHANGE,
+      PacketType.Play.Server.TILE_ENTITY_DATA
     );
 
     var blockDataClass = Class.forName(Bukkit.getServer().getClass().getPackageName() + ".block.data.CraftBlockData");
@@ -75,112 +85,164 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     this.logger = logger;
   }
 
+  @Override
+  public void sendBlockChange(Player player, Location location, BlockData blockData) {
+    try {
+      var packet = protocolManager.createPacket(PacketType.Play.Server.BLOCK_CHANGE);
+
+      packet.getBlockPositionModifier().write(0, new BlockPosition(
+        location.getBlockX(), location.getBlockY(), location.getBlockZ()
+      ));
+
+      packet.getBlockData().write(0, convertBlockData(blockData));
+
+      protocolManager.sendServerPacket(player, packet, false);
+    } catch (Exception e) {
+      logger.log(Level.SEVERE, "An error occurred while trying to send a change regarding a fake-block", e);
+    }
+  }
+
+  @Override
+  public void updateBlockToTexturedSkull(Player player, BlockFace mountingFace, Location location, String base64Textures) {
+    try {
+      var headBlockData = Material.PLAYER_WALL_HEAD.createBlockData();
+      ((Directional) headBlockData).setFacing(mountingFace);
+
+      var packet = protocolManager.createPacket(PacketType.Play.Server.TILE_ENTITY_DATA);
+
+      packet.getBlockPositionModifier().write(0, new BlockPosition(
+        location.getBlockX(),
+        location.getBlockY(),
+        location.getBlockZ()
+      ));
+
+      packet.getBlockEntityTypeModifier().write(0, WrappedRegistrable.blockEntityType("skull"));
+
+      var rootCompound = NbtFactory.ofCompound("")
+        .put(
+          NbtFactory.ofCompound("profile")
+            .put("name", "HeadDatabase")
+            .put(NbtFactory.ofList(
+              "properties",
+              NbtFactory.ofCompound("")
+                .put("name", "textures")
+                .put("value", base64Textures)
+            ))
+        );
+
+      packet.getNbtModifier().write(0, rootCompound);
+      sendBlockChange(player, location, headBlockData);
+      protocolManager.sendServerPacket(player, packet, false);
+    } catch (Exception e) {
+      logger.log(Level.SEVERE, "An error occurred while trying to update a fake-block to a textured skull", e);
+    }
+  }
+
   public WrappedBlockData convertBlockData(BlockData blockData) {
     try {
       return WrappedBlockData.fromHandle(blockDataHandleField.get(blockData));
     } catch (Exception e) {
-      logger.log(Level.SEVERE, "Could not convert block-data from NMS to ProtocolLib-wrapped", e);
-      // Rather fail safely, as these changes are only fake on the client-side anyways
+      logger.log(Level.SEVERE, "An error occurred while trying to convert NMS block-data to a ProtocolLib-wrapped instance", e);
+      // Rather fail safely, as these changes are only fake on the client-side anyway
       return WrappedBlockData.createData(Material.AIR);
     }
   }
 
   @Override
+  public void onPacketSending(PacketEvent event) {
+    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
+  }
+
+  @Override
   public void onPacketReceiving(PacketEvent event) {
-    Player player;
+    try {
+      tryAccessSession(event.getPlayer(), session -> {
+        var mainHandItem = session.viewer.getInventory().getItemInMainHand();
 
-    if ((player = event.getPlayer()) == null)
-      return;
+        boolean wasLeft = false;
+        Location interactionLocation = null;
 
-    var session = sessionByPlayerId.get(player.getUniqueId());
+        // All listened-to packet-types contain ACK sequence-numbers
+        if (PacketType.Play.Server.BLOCK_CHANGED_ACK.isSupported()) {
+          int blockChangeAckId = event.getPacket().getIntegers().read(0);
 
-    if (session == null)
-      return;
+          // Always acknowledge, as block-changes are not allowed to pass through to the server.
+          // Without acknowledgement, the client will refuse to accept follow-up block-updates.
+          var ackPacket = protocolManager.createPacket(PacketType.Play.Server.BLOCK_CHANGED_ACK);
+          ackPacket.getIntegers().write(0, blockChangeAckId);
+          protocolManager.sendServerPacket(session.viewer, ackPacket, false);
+        }
 
-    var mainHandItem = session.viewer.getInventory().getItemInMainHand();
+        // Block break; left-click
+        // Let's not go into as much detail as to figure out whether the block actually broke, just update it regardless.
+        if (event.getPacket().getType() == PacketType.Play.Client.BLOCK_DIG) {
+          var position = event.getPacket().getBlockPositionModifier().read(0);
 
-    boolean wasLeft = false;
-    Location interactionLocation = null;
+          interactionLocation = new Location(
+            session.viewer.getWorld(),
+            position.getX(), position.getY(), position.getZ()
+          );
 
-    // All listened-to packet-types contain ACK sequence-numbers
-    if (PacketType.Play.Server.BLOCK_CHANGED_ACK.isSupported()) {
-      int blockChangeAckId = event.getPacket().getIntegers().read(0);
+          session.onTryBlockManipulate(interactionLocation);
+          wasLeft = true;
+        }
 
-      // Always acknowledge, as block-changes are not allowed to pass through to the server.
-      // Without acknowledgement, the client will refuse to accept follow-up block-updates.
-      var ackPacket = protocolManager.createPacket(PacketType.Play.Server.BLOCK_CHANGED_ACK);
-      ackPacket.getIntegers().write(0, blockChangeAckId);
-      protocolManager.sendServerPacket(session.viewer, ackPacket);
+        // Block place or interaction; right-click
+        else if (event.getPacket().getType() == PacketType.Play.Client.USE_ITEM_ON) {
+          var movingPosition = event.getPacket().getMovingBlockPositions().read(0);
+          var position = movingPosition.getBlockPosition();
+
+          interactionLocation = new Location(
+            session.viewer.getWorld(),
+            position.getX(),
+            position.getY(),
+            position.getZ()
+          );
+
+          var mainHandItemType = mainHandItem.getType();
+
+          var doesBuild = !mainHandItemType.isAir() && (
+            mainHandItemType.isBlock() ||
+              mainHandItemType == Material.WATER_BUCKET ||
+              mainHandItemType == Material.LAVA_BUCKET
+          );
+
+          if (doesBuild) {
+            var blockFace = protocolLibDirectionToBlockPosition(movingPosition.getDirection());
+
+            session.onTryBlockManipulate(
+              interactionLocation.clone().add(
+                blockFace.getModX(),
+                blockFace.getModY(),
+                blockFace.getModZ()
+              )
+            );
+          } else
+            session.onTryBlockManipulate(interactionLocation);
+        }
+
+        // else: USE_ITEM -> Interaction into air with item in hand, just cancel
+
+        event.setCancelled(true);
+
+        // Force inventory-update, as to re-set the stack-size and durability
+        session.viewer.getInventory().setItemInMainHand(mainHandItem);
+
+        if (interactionLocation == null)
+          return;
+
+        // Since this is called based on received packets, and interactions may fire multiple times
+        // within a short time-span, debounce relaying this call to the underlying implementation.
+
+        if (System.currentTimeMillis() - lastProcessedInteractionStamp < INTERACTION_MIN_DISTANCE_MS)
+          return;
+
+        onSessionInteract(session, interactionLocation, wasLeft);
+        lastProcessedInteractionStamp = System.currentTimeMillis();
+      });
+    } catch (Exception e) {
+      logger.log(Level.SEVERE, "An error occurred while trying to handle a sent packet", e);
     }
-
-    // Block break; left-click
-    // Let's not go into as much detail as to figure out whether the block actually broke, just update it regardless.
-    if (event.getPacket().getType() == PacketType.Play.Client.BLOCK_DIG) {
-      var position = event.getPacket().getBlockPositionModifier().read(0);
-
-      interactionLocation = new Location(
-        session.viewer.getWorld(),
-        position.getX(), position.getY(), position.getZ()
-      );
-
-      session.onTryBlockManipulate(interactionLocation);
-      wasLeft = true;
-    }
-
-    // Block place or interaction; right-click
-    else if (event.getPacket().getType() == PacketType.Play.Client.USE_ITEM_ON) {
-      var movingPosition = event.getPacket().getMovingBlockPositions().read(0);
-      var position = movingPosition.getBlockPosition();
-
-      interactionLocation = new Location(
-        session.viewer.getWorld(),
-        position.getX(),
-        position.getY(),
-        position.getZ()
-      );
-
-      var mainHandItemType = mainHandItem.getType();
-
-      var doesBuild = !mainHandItemType.isAir() && (
-        mainHandItemType.isBlock() ||
-        mainHandItemType == Material.WATER_BUCKET ||
-        mainHandItemType == Material.LAVA_BUCKET
-      );
-
-      if (doesBuild) {
-        var blockFace = protocolLibDirectionToBlockPosition(movingPosition.getDirection());
-
-        session.onTryBlockManipulate(
-          interactionLocation.clone().add(
-            blockFace.getModX(),
-            blockFace.getModY(),
-            blockFace.getModZ()
-          )
-        );
-      }
-
-      else
-        session.onTryBlockManipulate(interactionLocation);
-    }
-
-    // else: USE_ITEM -> Interaction into air with item in hand, just cancel
-
-    event.setCancelled(true);
-
-    // Force inventory-update, as to re-set the stack-size and durability
-    session.viewer.getInventory().setItemInMainHand(mainHandItem);
-
-    if (interactionLocation == null)
-      return;
-
-    // Since this is called based on received packets, and interactions may fire multiple times
-    // within a short time-span, debounce relaying this call to the underlying implementation.
-
-    if (System.currentTimeMillis() - lastProcessedInteractionStamp < INTERACTION_MIN_DISTANCE_MS)
-      return;
-
-    onSessionInteract(session, interactionLocation, wasLeft);
-    lastProcessedInteractionStamp = System.currentTimeMillis();
   }
 
   private BlockFace protocolLibDirectionToBlockPosition(EnumWrappers.Direction direction) {
@@ -214,7 +276,7 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     if (sessionByPlayerId.containsKey(playerId))
       return null;
 
-    var session = new HeadWallSession(player, heads, WALL_PARAMETER, this::convertBlockData, protocolManager);
+    var session = new HeadWallSession(player, heads, WALL_PARAMETER, this);
 
     this.sessionByPlayerId.put(playerId, session);
     return session;
@@ -274,7 +336,10 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     });
   }
 
-  private void tryAccessSession(Player player, Consumer<HeadWallSession> handler) {
+  private void tryAccessSession(@Nullable Player player, Consumer<HeadWallSession> handler) {
+    if (player == null)
+      return;
+
     var session = sessionByPlayerId.get(player.getUniqueId());
 
     if (session != null)
