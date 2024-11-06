@@ -210,15 +210,7 @@ public class HeadWallSession {
     return headByLocationHash.get(fastCoordinateHash(target));
   }
 
-  public void onTryBlockManipulate(Location location, int blockChangeAckId) {
-    // Always acknowledge, as block-changes are not allowed to pass through to the server.
-    // Without acknowledgement, the client will refuse to accept follow-up block-updates.
-    if (blockChangeAckId >= 0 && PacketType.Play.Server.BLOCK_CHANGED_ACK.isSupported()) {
-      var ackPacket = protocolManager.createPacket(PacketType.Play.Server.BLOCK_CHANGED_ACK);
-      ackPacket.getIntegers().write(0, blockChangeAckId);
-      protocolManager.sendServerPacket(viewer, ackPacket);
-    }
-
+  public void onTryBlockManipulate(Location location) {
     var restoreRoutine = restoreRoutineByLocationHash.get(fastCoordinateHash(location));
 
     if (restoreRoutine != null)

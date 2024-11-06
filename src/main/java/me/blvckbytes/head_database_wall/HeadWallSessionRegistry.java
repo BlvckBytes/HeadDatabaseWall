@@ -63,12 +63,16 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     boolean wasLeft = false;
     Location interactionLocation = null;
 
-    int blockChangeAckId;
+    // All listened-to packet-types contain ACK sequence-numbers
+    if (PacketType.Play.Server.BLOCK_CHANGED_ACK.isSupported()) {
+      int blockChangeAckId = event.getPacket().getIntegers().read(0);
 
-    if (PacketType.Play.Server.BLOCK_CHANGED_ACK.isSupported())
-      blockChangeAckId = event.getPacket().getIntegers().read(0);
-    else
-      blockChangeAckId = -1;
+      // Always acknowledge, as block-changes are not allowed to pass through to the server.
+      // Without acknowledgement, the client will refuse to accept follow-up block-updates.
+      var ackPacket = protocolManager.createPacket(PacketType.Play.Server.BLOCK_CHANGED_ACK);
+      ackPacket.getIntegers().write(0, blockChangeAckId);
+      protocolManager.sendServerPacket(session.viewer, ackPacket);
+    }
 
     // Block break; left-click
     // Let's not go into as much detail as to figure out whether the block actually broke, just update it regardless.
@@ -80,7 +84,7 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
         position.getX(), position.getY(), position.getZ()
       );
 
-      session.onTryBlockManipulate(interactionLocation, blockChangeAckId);
+      session.onTryBlockManipulate(interactionLocation);
       wasLeft = true;
     }
 
@@ -100,7 +104,6 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
 
       var doesBuild = !mainHandItemType.isAir() && (
         mainHandItemType.isBlock() ||
-        // TODO: Emptied-out buckets do not seem to be cleared this way
         mainHandItemType == Material.WATER_BUCKET ||
         mainHandItemType == Material.LAVA_BUCKET
       );
@@ -113,13 +116,12 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
             blockFace.getModX(),
             blockFace.getModY(),
             blockFace.getModZ()
-          ),
-          blockChangeAckId
+          )
         );
       }
 
       else
-        session.onTryBlockManipulate(interactionLocation, blockChangeAckId);
+        session.onTryBlockManipulate(interactionLocation);
     }
 
     // else: USE_ITEM -> Interaction into air with item in hand, just cancel
