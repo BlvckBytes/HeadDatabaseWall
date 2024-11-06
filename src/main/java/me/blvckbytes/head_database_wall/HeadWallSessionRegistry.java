@@ -235,28 +235,15 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
   @EventHandler
   public void onScroll(PlayerItemHeldEvent event) {
     tryAccessSession(event.getPlayer(), session -> {
-      if (session.getNumberOfPages() == 1)
-        return;
-
       var isForwards = event.getPreviousSlot() < event.getNewSlot();
 
-      // TODO: Maybe wrap-around here, to quickly access the last page?
-
       if (isForwards) {
-        if (!session.nextPage()) {
-          session.viewer.sendMessage("§cNo next page");
-          return;
-        }
-
+        session.nextPage();
         session.viewer.sendMessage("§aNavigated to the next page, at " + session.getCurrentPage() + "/" + session.getNumberOfPages());
         return;
       }
 
-      if (!session.previousPage()) {
-        session.viewer.sendMessage("§cNo previous page");
-        return;
-      }
-
+      session.previousPage();
       session.viewer.sendMessage("§aNavigated to the previous page, at " + session.getCurrentPage() + "/" + session.getNumberOfPages());
     });
   }

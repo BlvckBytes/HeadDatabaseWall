@@ -178,22 +178,22 @@ public class HeadWallSession {
     return BlockFace.NORTH;
   }
 
-  public boolean nextPage() {
+  public void nextPage() {
     if (currentPage >= numberOfPages - 1)
-      return false;
+      this.currentPage = 0;
+    else
+      ++currentPage;
 
-    ++currentPage;
     this.show();
-    return true;
   }
 
-  public boolean previousPage() {
+  public void previousPage() {
     if (currentPage == 0)
-      return false;
+      this.currentPage = this.numberOfPages - 1;
+    else
+      --currentPage;
 
-    --currentPage;
     this.show();
-    return true;
   }
 
   public double distanceSquaredTo(Location location) {
