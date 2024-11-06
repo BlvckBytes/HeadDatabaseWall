@@ -1,5 +1,6 @@
 package me.blvckbytes.head_database_wall;
 
+import com.comphenix.protocol.ProtocolManager;
 import me.arcaniax.hdb.object.head.Head;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
@@ -12,10 +13,7 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerToggleSneakEvent;
 
 import javax.annotation.Nullable;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 import java.util.function.Consumer;
 
 public class HeadWallSessionRegistry implements Listener {
@@ -27,8 +25,11 @@ public class HeadWallSessionRegistry implements Listener {
 
   private final Map<UUID, HeadWallSession> sessionByPlayerId;
 
-  public HeadWallSessionRegistry() {
+  private final ProtocolManager protocolManager;
+
+  public HeadWallSessionRegistry(ProtocolManager protocolManager) {
     this.sessionByPlayerId = new HashMap<>();
+    this.protocolManager = protocolManager;
   }
 
   public void checkSessionsForDistanceRemoval() {
@@ -51,7 +52,7 @@ public class HeadWallSessionRegistry implements Listener {
     if (sessionByPlayerId.containsKey(playerId))
       return null;
 
-    var session = new HeadWallSession(player, heads, WALL_PARAMETER);
+    var session = new HeadWallSession(player, heads, WALL_PARAMETER, protocolManager);
 
     this.sessionByPlayerId.put(playerId, session);
     return session;
@@ -114,7 +115,12 @@ public class HeadWallSessionRegistry implements Listener {
   @EventHandler
   public void onScroll(PlayerItemHeldEvent event) {
     tryAccessSession(event.getPlayer(), session -> {
+      if (session.getNumberOfPages() == 1)
+        return;
+
       var isForwards = event.getPreviousSlot() < event.getNewSlot();
+
+      // TODO: Maybe wrap-around here, to quickly access the last page?
 
       if (isForwards) {
         if (!session.nextPage()) {

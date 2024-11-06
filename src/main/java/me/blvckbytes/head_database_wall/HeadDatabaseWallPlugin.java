@@ -1,5 +1,6 @@
 package me.blvckbytes.head_database_wall;
 
+import com.comphenix.protocol.ProtocolLibrary;
 import me.arcaniax.hdb.api.HeadDatabaseAPI;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -20,9 +21,11 @@ public class HeadDatabaseWallPlugin extends JavaPlugin {
       if (!Bukkit.getServer().getPluginManager().isPluginEnabled("HeadDatabase"))
         throw new IllegalStateException("Expected the plugin \"HeadDatabase\" to be loaded.");
 
+      var protocolManager = ProtocolLibrary.getProtocolManager();
+
       var headDatabase = new HeadDatabaseAPI();
 
-      sessionRegistry = new HeadWallSessionRegistry();
+      sessionRegistry = new HeadWallSessionRegistry(protocolManager);
 
       Bukkit.getServer().getPluginManager().registerEvents(sessionRegistry, this);
 

@@ -1,15 +1,18 @@
 package me.blvckbytes.head_database_wall;
 
+import com.comphenix.protocol.PacketType;
+import com.comphenix.protocol.ProtocolManager;
+import com.comphenix.protocol.wrappers.BlockPosition;
+import com.comphenix.protocol.wrappers.WrappedRegistrable;
+import com.comphenix.protocol.wrappers.nbt.NbtFactory;
 import it.unimi.dsi.fastutil.longs.Long2ObjectAVLTreeMap;
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import me.arcaniax.hdb.object.head.Head;
 import org.bukkit.Location;
 import org.bukkit.Material;
-import org.bukkit.World;
 import org.bukkit.block.BlockFace;
-import org.bukkit.block.Skull;
+import org.bukkit.block.data.Rotatable;
 import org.bukkit.entity.Player;
-import org.bukkit.inventory.meta.SkullMeta;
 
 import javax.annotation.Nullable;
 import java.util.List;
@@ -43,10 +46,13 @@ public class HeadWallSession {
   private final int numberOfPages;
   private int currentPage;
 
-  public HeadWallSession(Player viewer, List<Head> heads, HeadWallParameters parameters) {
+  private final ProtocolManager protocolManager;
+
+  public HeadWallSession(Player viewer, List<Head> heads, HeadWallParameters parameters, ProtocolManager protocolManager) {
     this.viewer = viewer;
     this.parameters = parameters;
     this.heads = heads;
+    this.protocolManager = protocolManager;
 
     this.headByLocationHash = new Long2ObjectAVLTreeMap<>();
     this.pageSize = parameters.rows() * parameters.columns();
@@ -222,19 +228,36 @@ public class HeadWallSession {
 
       var currentHead = heads.get(headIndex);
 
-      headByLocationHash.put(locationAndHash.hash, currentHead);
+      var headBlockData = Material.PLAYER_HEAD.createBlockData();
 
-      // TODO: Draw this head only for the viewer
-      var block = locationAndHash.location.getBlock();
-      block.setType(Material.PLAYER_HEAD);
-      var skullState = (Skull) block.getState();
-      skullState.setOwnerProfile(
-        Objects.requireNonNull(
-          ((SkullMeta)currentHead.getHead().getItemMeta())
-        ).getOwnerProfile()
-      );
-      skullState.setRotation(lookingFace);
-      skullState.update();
+      ((Rotatable) headBlockData).setRotation(lookingFace);
+
+      viewer.sendBlockChange(locationAndHash.location, headBlockData);
+
+      var packet = protocolManager.createPacket(PacketType.Play.Server.TILE_ENTITY_DATA);
+
+      packet.getBlockPositionModifier().write(0, new BlockPosition(
+        locationAndHash.location.getBlockX(),
+        locationAndHash.location.getBlockY(),
+        locationAndHash.location.getBlockZ()
+      ));
+
+      packet.getBlockEntityTypeModifier().write(0, WrappedRegistrable.blockEntityType("skull"));
+
+      var rootCompound = NbtFactory.ofCompound("")
+        .put(
+          NbtFactory.ofCompound("profile")
+            .put("name", "HeadDatabase")
+              .put(NbtFactory.ofList(
+                "properties",
+                NbtFactory.ofCompound("")
+                  .put("name", "textures")
+                  .put("value", currentHead.b64)
+              ))
+        );
+
+      packet.getNbtModifier().write(0, rootCompound);
+      protocolManager.sendServerPacket(viewer, packet);
     });
   }
 
