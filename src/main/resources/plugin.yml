@@ -3,7 +3,7 @@ main: me.blvckbytes.head_database_wall.HeadDatabaseWallPlugin
 version: 0.1
 author: BlvckBytes
 api-version: 1.21
-depends: [HeadDatabase]
+depends: [HeadDatabase, ProtocolLib]
 commands:
   headdatabasewall:
     aliases: [hdbw]

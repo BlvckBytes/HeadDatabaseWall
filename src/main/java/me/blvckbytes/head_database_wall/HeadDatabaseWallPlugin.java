@@ -21,9 +21,6 @@ public class HeadDatabaseWallPlugin extends JavaPlugin {
     var logger = getLogger();
 
     try {
-      if (!Bukkit.getServer().getPluginManager().isPluginEnabled("HeadDatabase"))
-        throw new IllegalStateException("Expected the plugin \"HeadDatabase\" to be loaded.");
-
       var headDatabase = new HeadDatabaseAPI();
 
       protocolManager = ProtocolLibrary.getProtocolManager();
