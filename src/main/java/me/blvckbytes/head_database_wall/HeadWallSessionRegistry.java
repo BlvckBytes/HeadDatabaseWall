@@ -13,8 +13,6 @@ import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.block.BlockBreakEvent;
-import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.player.*;
 import org.bukkit.plugin.Plugin;
 
@@ -60,6 +58,8 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     if (session == null)
       return;
 
+    var mainHandItem = session.viewer.getInventory().getItemInMainHand();
+
     boolean wasLeft = false;
     Location interactionLocation = null;
 
@@ -96,9 +96,14 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
         position.getZ()
       );
 
-      var mainHandItem = session.viewer.getInventory().getItemInMainHand();
       var mainHandItemType = mainHandItem.getType();
-      var doesBuild = !mainHandItemType.isAir() && mainHandItemType.isBlock();
+
+      var doesBuild = !mainHandItemType.isAir() && (
+        mainHandItemType.isBlock() ||
+        // TODO: Emptied-out buckets do not seem to be cleared this way
+        mainHandItemType == Material.WATER_BUCKET ||
+        mainHandItemType == Material.LAVA_BUCKET
+      );
 
       if (doesBuild) {
         var blockFace = protocolLibDirectionToBlockPosition(movingPosition.getDirection());
@@ -111,9 +116,6 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
           ),
           blockChangeAckId
         );
-
-        // Force inventory-update, as to re-set the stack-size
-        session.viewer.getInventory().setItemInMainHand(mainHandItem);
       }
 
       else
@@ -123,6 +125,9 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     // else: USE_ITEM -> Interaction into air with item in hand, just cancel
 
     event.setCancelled(true);
+
+    // Force inventory-update, as to re-set the stack-size and durability
+    session.viewer.getInventory().setItemInMainHand(mainHandItem);
 
     if (interactionLocation == null)
       return;
@@ -193,26 +198,6 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     session.viewer.sendMessage("§aCategory: " + correspondingHead.c.name());
     session.viewer.sendMessage("§aTags: " + String.join(", ", correspondingHead.tags));
     session.viewer.sendMessage("§8§m                              ");
-  }
-
-  @EventHandler
-  public void onBreak(BlockBreakEvent event) {
-    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
-  }
-
-  @EventHandler
-  public void onPlace(BlockPlaceEvent event) {
-    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
-  }
-
-  @EventHandler
-  public void onBucketEmpty(PlayerBucketEmptyEvent event) {
-    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
-  }
-
-  @EventHandler
-  public void onInteract(PlayerInteractEvent event) {
-    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
   }
 
   @EventHandler
