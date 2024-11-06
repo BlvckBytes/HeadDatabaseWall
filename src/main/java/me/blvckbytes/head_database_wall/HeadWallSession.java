@@ -19,11 +19,15 @@ public class HeadWallSession {
     void handle(int slotIndex, LocationAndHash locationAndHash);
   }
 
-  private record LocationAndHash(Location location, long hash) {}
+  private record LocationAndHash(Location location, long hash) {
+    LocationAndHash(Location location) {
+      this(location, fastCoordinateHash(location));
+    }
+  }
 
   private final LocationAndHash[][] headGrid;
-  private final Location[] viewingBoxLocations;
-  private final Location[] wallLocations;
+  private final LocationAndHash[] viewingBoxLocations;
+  private final LocationAndHash[] wallLocations;
   private final BlockFace lookingFace;
   private final Long2ObjectMap<Head> headByLocationHash;
   private final Long2ObjectMap<Runnable> restoreRoutineByLocationHash;
@@ -61,14 +65,14 @@ public class HeadWallSession {
     this.numberOfPages = Math.max(1, (heads.size() + (pageSize - 1)) / pageSize);
 
     this.headGrid = new LocationAndHash[parameters.rows()][parameters.columns()];
-    this.wallLocations = new Location[pageSize];
+    this.wallLocations = new LocationAndHash[pageSize];
 
     var wallDistance = parameters.distance() + 1;
 
     // Include the player's location itself, as to ensure a complete lack of obstructions
     var viewingBoxDepth = parameters.distance() + 1;
 
-    this.viewingBoxLocations = new Location[pageSize * viewingBoxDepth];
+    this.viewingBoxLocations = new LocationAndHash[pageSize * viewingBoxDepth];
 
     var viewerLocation = viewer.getLocation();
     lookingFace = decideLookingFace(viewerLocation.getYaw());
@@ -109,23 +113,25 @@ public class HeadWallSession {
           lookingFaceOpposite.getModZ()
         );
 
-        wallLocations[wallLocationsIndex++] = currentWallLocation;
-        headRow[columnIndex] = new LocationAndHash(currentHeadLocation, fastCoordinateHash(currentHeadLocation));
+        wallLocations[wallLocationsIndex++] = new LocationAndHash(currentWallLocation);
+        headRow[columnIndex] = new LocationAndHash(currentHeadLocation);
 
         // Offset in [1;depth] and add one to account for the heads themselves
         for (var depthOffset = 2; depthOffset <= viewingBoxDepth + 1; ++depthOffset) {
-          viewingBoxLocations[viewingBoxLocationsIndex++] = currentWallLocation.clone().add(
+          viewingBoxLocations[viewingBoxLocationsIndex++] = new LocationAndHash(
+            currentWallLocation.clone().add(
             lookingFaceOpposite.getModX() * depthOffset,
             0,
             lookingFaceOpposite.getModZ() * depthOffset
+            )
           );
         }
       }
     }
   }
 
-  private void captureRestoreRoutineAndExecute(Location location, Runnable routine) {
-    restoreRoutineByLocationHash.put(fastCoordinateHash(location), routine);
+  private void captureRestoreRoutineAndExecute(LocationAndHash locationAndHash, Runnable routine) {
+    restoreRoutineByLocationHash.put(locationAndHash.hash, routine);
     routine.run();
   }
 
@@ -229,12 +235,20 @@ public class HeadWallSession {
       didInitializeAuxiliaryLocations = true;
 
       var wallTypeBlockData = parameters.wallType().createBlockData();
-      for (var wallLocation : wallLocations)
-        captureRestoreRoutineAndExecute(wallLocation, () -> communicator.sendBlockChange(viewer, wallLocation, wallTypeBlockData));
+      for (var wallLocationAndHash : wallLocations) {
+        captureRestoreRoutineAndExecute(
+          wallLocationAndHash,
+          () -> communicator.sendBlockChange(viewer, wallLocationAndHash.location, wallTypeBlockData)
+        );
+      }
 
       var airBlockData = Material.AIR.createBlockData();
-      for (var viewingBoxLocation : viewingBoxLocations)
-        captureRestoreRoutineAndExecute(viewingBoxLocation, () -> communicator.sendBlockChange(viewer, viewingBoxLocation, airBlockData));
+      for (var viewingBoxLocationAndHash : viewingBoxLocations) {
+        captureRestoreRoutineAndExecute(
+          viewingBoxLocationAndHash,
+          () -> communicator.sendBlockChange(viewer, viewingBoxLocationAndHash.location, airBlockData)
+        );
+      }
     }
 
     didDrawHeads = true;
@@ -253,7 +267,7 @@ public class HeadWallSession {
       headByLocationHash.put(locationAndHash.hash, currentHead);
 
       captureRestoreRoutineAndExecute(
-        locationAndHash.location,
+        locationAndHash,
         () -> communicator.updateBlockToTexturedSkull(viewer, lookingFace.getOppositeFace(), locationAndHash.location, currentHead.b64)
       );
     });
@@ -265,11 +279,15 @@ public class HeadWallSession {
     if (didInitializeAuxiliaryLocations) {
       didInitializeAuxiliaryLocations = false;
 
-      for (var wallLocation : wallLocations)
-        communicator.sendBlockChange(viewer, wallLocation, wallLocation.getBlock().getBlockData());
+      for (var wallLocationAndHash : wallLocations) {
+        var location = wallLocationAndHash.location;
+        communicator.sendBlockChange(viewer, location, location.getBlock().getBlockData());
+      }
 
-      for (var viewingBoxLocation : viewingBoxLocations)
-        communicator.sendBlockChange(viewer, viewingBoxLocation, viewingBoxLocation.getBlock().getBlockData());
+      for (var viewingBoxLocationAndHash : viewingBoxLocations) {
+        var location = viewingBoxLocationAndHash.location;
+        communicator.sendBlockChange(viewer, location, location.getBlock().getBlockData());
+      }
     }
 
     if (didDrawHeads) {
@@ -294,11 +312,11 @@ public class HeadWallSession {
     }
   }
 
-  private long fastCoordinateHash(Location location) {
+  private static long fastCoordinateHash(Location location) {
     return fastCoordinateHash(location.getBlockX(), location.getBlockY(), location.getBlockZ());
   }
 
-  private long fastCoordinateHash(int x, int y, int z) {
+  private static long fastCoordinateHash(int x, int y, int z) {
     // y in [-64;320] - adding 64 will result in [0;384], thus 9 bits will suffice
     // long has 64 bits, (64-9)/2 = 27.5, thus, let's reserve 10 bits for y, and add 128, for future-proofing
     // 27 bits per x/z axis, with one sign-bit, => +- 67,108,864
