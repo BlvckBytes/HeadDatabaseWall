@@ -1,23 +1,30 @@
 package me.blvckbytes.head_database_wall;
 
+import com.comphenix.protocol.PacketType;
 import com.comphenix.protocol.ProtocolManager;
+import com.comphenix.protocol.events.ListenerPriority;
+import com.comphenix.protocol.events.PacketAdapter;
+import com.comphenix.protocol.events.PacketEvent;
+import com.comphenix.protocol.wrappers.EnumWrappers;
 import me.arcaniax.hdb.object.head.Head;
+import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
-import org.bukkit.event.block.Action;
-import org.bukkit.event.player.PlayerInteractEvent;
-import org.bukkit.event.player.PlayerItemHeldEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.event.player.PlayerToggleSneakEvent;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.player.*;
+import org.bukkit.plugin.Plugin;
 
 import javax.annotation.Nullable;
 import java.util.*;
 import java.util.function.Consumer;
 
-public class HeadWallSessionRegistry implements Listener {
+public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
 
+  private static final long INTERACTION_MIN_DISTANCE_MS = 250; // Up to 4 heads/second will suffice, I believe, x)
   private static final double REMOVAL_DISTANCE_BLOCKS = 10;
   private static final double REMOVAL_DISTANCE_BLOCKS_SQUARED = REMOVAL_DISTANCE_BLOCKS * REMOVAL_DISTANCE_BLOCKS;
 
@@ -27,9 +34,117 @@ public class HeadWallSessionRegistry implements Listener {
 
   private final ProtocolManager protocolManager;
 
-  public HeadWallSessionRegistry(ProtocolManager protocolManager) {
+  private long lastProcessedInteractionStamp;
+
+  public HeadWallSessionRegistry(Plugin plugin, ProtocolManager protocolManager) {
+    super(
+      plugin, ListenerPriority.HIGHEST,
+      PacketType.Play.Client.BLOCK_DIG,
+      PacketType.Play.Client.USE_ITEM_ON,
+      PacketType.Play.Client.USE_ITEM
+    );
+
     this.sessionByPlayerId = new HashMap<>();
     this.protocolManager = protocolManager;
+  }
+
+  @Override
+  public void onPacketReceiving(PacketEvent event) {
+    Player player;
+
+    if ((player = event.getPlayer()) == null)
+      return;
+
+    var session = sessionByPlayerId.get(player.getUniqueId());
+
+    if (session == null)
+      return;
+
+    boolean doCancel;
+    boolean wasLeft;
+    Location interactionLocation;
+
+    // Block break; left-click
+    // Let's not go into as much detail as to figure out whether the block actually broke, just update it regardless.
+    if (event.getPacket().getType() == PacketType.Play.Client.BLOCK_DIG) {
+      var position = event.getPacket().getBlockPositionModifier().read(0);
+
+      interactionLocation = new Location(
+        session.viewer.getWorld(),
+        position.getX(), position.getY(), position.getZ()
+      );
+
+      doCancel = session.onTryBlockManipulate(interactionLocation);
+      wasLeft = true;
+    }
+
+    // Block place or interaction; right-click
+    else if (event.getPacket().getType() == PacketType.Play.Client.USE_ITEM_ON) {
+      var movingPosition = event.getPacket().getMovingBlockPositions().read(0);
+      var position = movingPosition.getBlockPosition();
+
+      interactionLocation = new Location(
+        session.viewer.getWorld(),
+        position.getX(),
+        position.getY(),
+        position.getZ()
+      );
+
+      var mainHandItem = session.viewer.getInventory().getItemInMainHand();
+      var mainHandItemType = mainHandItem.getType();
+      var doesBuild = !mainHandItemType.isAir() && mainHandItemType.isBlock();
+
+      if (doesBuild) {
+        var blockFace = protocolLibDirectionToBlockPosition(movingPosition.getDirection());
+
+        doCancel = session.onTryBlockManipulate(
+          interactionLocation.clone().add(
+            blockFace.getModX(),
+            blockFace.getModY(),
+            blockFace.getModZ()
+          )
+        );
+
+        // Force inventory-update, as to re-set the stack-size
+        session.viewer.getInventory().setItemInMainHand(mainHandItem);
+      }
+
+      else
+        doCancel = session.onTryBlockManipulate(interactionLocation);
+
+      wasLeft = false;
+    }
+
+    // USE_ITEM -> Interaction into air with item in hand, just cancel
+    else {
+      event.setCancelled(true);
+      return;
+    }
+
+    if (!doCancel)
+      return;
+
+    event.setCancelled(true);
+
+    // Since this is called based on received packets, and interactions may fire multiple times
+    // within a short time-span, debounce relaying this call to the underlying implementation.
+
+    if (System.currentTimeMillis() - lastProcessedInteractionStamp < INTERACTION_MIN_DISTANCE_MS)
+      return;
+
+    onSessionInteract(session, interactionLocation, wasLeft);
+    lastProcessedInteractionStamp = System.currentTimeMillis();
+  }
+
+  private BlockFace protocolLibDirectionToBlockPosition(EnumWrappers.Direction direction) {
+    return switch (direction) {
+      case DOWN -> BlockFace.DOWN;
+      case UP -> BlockFace.UP;
+      case NORTH -> BlockFace.NORTH;
+      case SOUTH -> BlockFace.SOUTH;
+      case WEST -> BlockFace.WEST;
+      case EAST -> BlockFace.EAST;
+    };
   }
 
   public void checkSessionsForDistanceRemoval() {
@@ -58,41 +173,45 @@ public class HeadWallSessionRegistry implements Listener {
     return session;
   }
 
+  private void onSessionInteract(HeadWallSession session, Location location, boolean wasLeft) {
+    var correspondingHead = session.getHeadAtLocation(location);
+
+    if (correspondingHead == null) {
+      session.viewer.sendMessage("§cPlease click directly on a head; left-click to request, right-click for information, sneak to exit");
+      return;
+    }
+
+    if (wasLeft) {
+      session.viewer.getInventory().addItem(correspondingHead.getHead());
+      session.viewer.sendMessage("§aYou've been given the head " + correspondingHead.name);
+      return;
+    }
+
+    session.viewer.sendMessage("§8§m                              ");
+    session.viewer.sendMessage("§aName: " + correspondingHead.name);
+    session.viewer.sendMessage("§aCategory: " + correspondingHead.c.name());
+    session.viewer.sendMessage("§aTags: " + String.join(", ", correspondingHead.tags));
+    session.viewer.sendMessage("§8§m                              ");
+  }
+
+  @EventHandler
+  public void onBreak(BlockBreakEvent event) {
+    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
+  }
+
+  @EventHandler
+  public void onPlace(BlockPlaceEvent event) {
+    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
+  }
+
+  @EventHandler
+  public void onBucketEmpty(PlayerBucketEmptyEvent event) {
+    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
+  }
+
   @EventHandler
   public void onInteract(PlayerInteractEvent event) {
-    var player = event.getPlayer();
-
-    tryAccessSession(player, session -> {
-      // TODO: Fake-blocks can de-spawn easily once clicked; this requires a lot of extra thought...
-      event.setCancelled(true);
-
-      var block = event.getClickedBlock();
-
-      if (block == null)
-        return;
-
-      var correspondingHead = session.getHeadAtLocation(block.getLocation());
-
-      if (correspondingHead == null) {
-        player.sendMessage("§cPlease click directly on a head; left-click to request, right-click for information, sneak to exit");
-        return;
-      }
-
-      var action = event.getAction();
-      var isLeft = action == Action.LEFT_CLICK_AIR || action == Action.LEFT_CLICK_BLOCK;
-
-      if (isLeft) {
-        player.getInventory().addItem(correspondingHead.getHead());
-        player.sendMessage("§aYou've been given the head " + correspondingHead.name);
-        return;
-      }
-
-      player.sendMessage("§8§m                              ");
-      player.sendMessage("§aName: " + correspondingHead.name);
-      player.sendMessage("§aCategory: " + correspondingHead.c.name());
-      player.sendMessage("§aTags: " + String.join(", ", correspondingHead.tags));
-      player.sendMessage("§8§m                              ");
-    });
+    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
   }
 
   @EventHandler

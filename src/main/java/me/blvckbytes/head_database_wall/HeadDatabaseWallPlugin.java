@@ -1,6 +1,7 @@
 package me.blvckbytes.head_database_wall;
 
 import com.comphenix.protocol.ProtocolLibrary;
+import com.comphenix.protocol.ProtocolManager;
 import me.arcaniax.hdb.api.HeadDatabaseAPI;
 import org.bukkit.Bukkit;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -11,6 +12,8 @@ import java.util.logging.Level;
 public class HeadDatabaseWallPlugin extends JavaPlugin {
 
   private static final long DISTANCE_REMOVAL_CHECK_PERIOD_T = 40;
+
+  private ProtocolManager protocolManager;
   private HeadWallSessionRegistry sessionRegistry;
 
   @Override
@@ -21,11 +24,11 @@ public class HeadDatabaseWallPlugin extends JavaPlugin {
       if (!Bukkit.getServer().getPluginManager().isPluginEnabled("HeadDatabase"))
         throw new IllegalStateException("Expected the plugin \"HeadDatabase\" to be loaded.");
 
-      var protocolManager = ProtocolLibrary.getProtocolManager();
-
       var headDatabase = new HeadDatabaseAPI();
 
-      sessionRegistry = new HeadWallSessionRegistry(protocolManager);
+      protocolManager = ProtocolLibrary.getProtocolManager();
+      sessionRegistry = new HeadWallSessionRegistry(this, protocolManager);
+      protocolManager.addPacketListener(sessionRegistry);
 
       Bukkit.getServer().getPluginManager().registerEvents(sessionRegistry, this);
 
@@ -46,5 +49,8 @@ public class HeadDatabaseWallPlugin extends JavaPlugin {
   public void onDisable() {
     if (sessionRegistry != null)
       sessionRegistry.onShutdown();
+
+    if (protocolManager != null)
+      protocolManager.removePacketListener(sessionRegistry);
   }
 }

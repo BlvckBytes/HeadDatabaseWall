@@ -32,6 +32,7 @@ public class HeadWallSession {
   private final Location[] wallLocations;
   private final BlockFace lookingFace;
   private final Long2ObjectMap<Head> headByLocationHash;
+  private final Long2ObjectMap<Runnable> restoreRoutineByLocationHash;
 
   public final Player viewer;
   private final Location bottomCenter;
@@ -55,6 +56,8 @@ public class HeadWallSession {
     this.protocolManager = protocolManager;
 
     this.headByLocationHash = new Long2ObjectAVLTreeMap<>();
+    this.restoreRoutineByLocationHash = new Long2ObjectAVLTreeMap<>();
+
     this.pageSize = parameters.rows() * parameters.columns();
     this.numberOfPages = Math.max(1, (heads.size() + (pageSize - 1)) / pageSize);
 
@@ -120,6 +123,12 @@ public class HeadWallSession {
         }
       }
     }
+  }
+
+  // TODO: None of these darn routines set the block back to what it was supposed to be... investigate!
+  private void captureRestoreRoutineAndExecute(Location location, Runnable runnable) {
+    restoreRoutineByLocationHash.put(fastCoordinateHash(location), runnable);
+    runnable.run();
   }
 
   public int getNumberOfPages() {
@@ -202,17 +211,36 @@ public class HeadWallSession {
     return headByLocationHash.get(fastCoordinateHash(target));
   }
 
+  public boolean onTryBlockManipulate(Location location) {
+    var restoreRoutine = restoreRoutineByLocationHash.get(fastCoordinateHash(location));
+
+    if (restoreRoutine != null) {
+      restoreRoutine.run();
+      return true;
+    }
+
+    return false;
+  }
+
   public void show() {
     if (!didInitializeAuxiliaryLocations) {
       didInitializeAuxiliaryLocations = true;
 
       var wallBlockData = parameters.wallType().createBlockData();
-      for (var wallLocation : wallLocations)
-        viewer.sendBlockChange(wallLocation, wallBlockData);
+      for (var wallLocation : wallLocations) {
+        captureRestoreRoutineAndExecute(wallLocation, () -> {
+          System.out.println("drawing wall-location " + wallLocation.getBlockX() + ", " + wallLocation.getBlockY() + ", " + wallLocation.getBlockZ());
+          viewer.sendBlockChange(wallLocation, wallBlockData);
+        });
+      }
 
-      var airBlockData = Material.AIR.createBlockData();
-      for (var viewingBoxLocation : viewingBoxLocations)
-        viewer.sendBlockChange(viewingBoxLocation, airBlockData);
+      for (var viewingBoxLocation : viewingBoxLocations) {
+        captureRestoreRoutineAndExecute(viewingBoxLocation, () -> {
+          var airBlockData = Material.AIR.createBlockData();
+          System.out.println("drawing view-box-location " + viewingBoxLocation.getBlockX() + ", " + viewingBoxLocation.getBlockY() + ", " + viewingBoxLocation.getBlockZ());
+          viewer.sendBlockChange(viewingBoxLocation, airBlockData);
+        });
+      }
     }
 
     didDrawHeads = true;
@@ -228,11 +256,10 @@ public class HeadWallSession {
 
       var currentHead = heads.get(headIndex);
 
+      headByLocationHash.put(locationAndHash.hash, currentHead);
+
       var headBlockData = Material.PLAYER_HEAD.createBlockData();
-
       ((Rotatable) headBlockData).setRotation(lookingFace);
-
-      viewer.sendBlockChange(locationAndHash.location, headBlockData);
 
       var packet = protocolManager.createPacket(PacketType.Play.Server.TILE_ENTITY_DATA);
 
@@ -257,7 +284,12 @@ public class HeadWallSession {
         );
 
       packet.getNbtModifier().write(0, rootCompound);
-      protocolManager.sendServerPacket(viewer, packet);
+
+      captureRestoreRoutineAndExecute(locationAndHash.location, () -> {
+        System.out.println("drawing head-location " + locationAndHash.location.getBlockX() + ", " + locationAndHash.location.getBlockY() + ", " + locationAndHash.location.getBlockZ());
+        viewer.sendBlockChange(locationAndHash.location, headBlockData);
+        protocolManager.sendServerPacket(viewer, packet);
+      });
     });
   }
 

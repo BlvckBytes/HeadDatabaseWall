@@ -65,7 +65,9 @@ public class HeadDatabaseWallCommand implements CommandExecutor, TabCompleter {
 
     session.show();
 
-    sender.sendMessage("§aYour selected category holds " + targetHeads.size() + " heads; Showing page 1/" + session.getNumberOfPages());
+    sender.sendMessage("§aYour selected category holds " + targetHeads.size() + " heads.");
+    sender.sendMessage("§aShowing page 1/" + session.getNumberOfPages());
+    sender.sendMessage("§aLeft-click to request head, right-click to print infos");
     return true;
   }
 
