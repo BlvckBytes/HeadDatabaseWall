@@ -125,10 +125,9 @@ public class HeadWallSession {
     }
   }
 
-  // TODO: None of these darn routines set the block back to what it was supposed to be... investigate!
-  private void captureRestoreRoutineAndExecute(Location location, Runnable runnable) {
-    restoreRoutineByLocationHash.put(fastCoordinateHash(location), runnable);
-    runnable.run();
+  private void captureRestoreRoutineAndExecute(Location location, Runnable routine) {
+    restoreRoutineByLocationHash.put(fastCoordinateHash(location), routine);
+    routine.run();
   }
 
   public int getNumberOfPages() {
@@ -211,36 +210,36 @@ public class HeadWallSession {
     return headByLocationHash.get(fastCoordinateHash(target));
   }
 
-  public boolean onTryBlockManipulate(Location location) {
-    var restoreRoutine = restoreRoutineByLocationHash.get(fastCoordinateHash(location));
-
-    if (restoreRoutine != null) {
-      restoreRoutine.run();
-      return true;
+  public void onTryBlockManipulate(Location location, int blockChangeAckId) {
+    // Always acknowledge, as block-changes are not allowed to pass through to the server.
+    // Without acknowledgement, the client will refuse to accept follow-up block-updates.
+    if (blockChangeAckId >= 0 && PacketType.Play.Server.BLOCK_CHANGED_ACK.isSupported()) {
+      var ackPacket = protocolManager.createPacket(PacketType.Play.Server.BLOCK_CHANGED_ACK);
+      ackPacket.getIntegers().write(0, blockChangeAckId);
+      protocolManager.sendServerPacket(viewer, ackPacket);
     }
 
-    return false;
+    var restoreRoutine = restoreRoutineByLocationHash.get(fastCoordinateHash(location));
+
+    if (restoreRoutine != null)
+      restoreRoutine.run();
+
+    // Restore the real block, as no event will be called (see reasoning for ack)
+    else
+      viewer.sendBlockChange(location, location.getBlock().getBlockData());
   }
 
   public void show() {
     if (!didInitializeAuxiliaryLocations) {
       didInitializeAuxiliaryLocations = true;
 
-      var wallBlockData = parameters.wallType().createBlockData();
-      for (var wallLocation : wallLocations) {
-        captureRestoreRoutineAndExecute(wallLocation, () -> {
-          System.out.println("drawing wall-location " + wallLocation.getBlockX() + ", " + wallLocation.getBlockY() + ", " + wallLocation.getBlockZ());
-          viewer.sendBlockChange(wallLocation, wallBlockData);
-        });
-      }
+      var wallTypeBlockData = parameters.wallType().createBlockData();
+      for (var wallLocation : wallLocations)
+        captureRestoreRoutineAndExecute(wallLocation, () -> viewer.sendBlockChange(wallLocation, wallTypeBlockData));
 
-      for (var viewingBoxLocation : viewingBoxLocations) {
-        captureRestoreRoutineAndExecute(viewingBoxLocation, () -> {
-          var airBlockData = Material.AIR.createBlockData();
-          System.out.println("drawing view-box-location " + viewingBoxLocation.getBlockX() + ", " + viewingBoxLocation.getBlockY() + ", " + viewingBoxLocation.getBlockZ());
-          viewer.sendBlockChange(viewingBoxLocation, airBlockData);
-        });
-      }
+      var airBlockData = Material.AIR.createBlockData();
+      for (var viewingBoxLocation : viewingBoxLocations)
+        captureRestoreRoutineAndExecute(viewingBoxLocation, () -> viewer.sendBlockChange(viewingBoxLocation, airBlockData));
     }
 
     didDrawHeads = true;
@@ -258,6 +257,7 @@ public class HeadWallSession {
 
       headByLocationHash.put(locationAndHash.hash, currentHead);
 
+      // TODO: These heads are not really mounted on the wall, but they float before it...
       var headBlockData = Material.PLAYER_HEAD.createBlockData();
       ((Rotatable) headBlockData).setRotation(lookingFace);
 
@@ -286,7 +286,6 @@ public class HeadWallSession {
       packet.getNbtModifier().write(0, rootCompound);
 
       captureRestoreRoutineAndExecute(locationAndHash.location, () -> {
-        System.out.println("drawing head-location " + locationAndHash.location.getBlockX() + ", " + locationAndHash.location.getBlockY() + ", " + locationAndHash.location.getBlockZ());
         viewer.sendBlockChange(locationAndHash.location, headBlockData);
         protocolManager.sendServerPacket(viewer, packet);
       });

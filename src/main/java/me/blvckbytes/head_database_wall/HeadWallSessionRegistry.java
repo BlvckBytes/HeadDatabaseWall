@@ -60,9 +60,15 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
     if (session == null)
       return;
 
-    boolean doCancel;
-    boolean wasLeft;
-    Location interactionLocation;
+    boolean wasLeft = false;
+    Location interactionLocation = null;
+
+    int blockChangeAckId;
+
+    if (PacketType.Play.Server.BLOCK_CHANGED_ACK.isSupported())
+      blockChangeAckId = event.getPacket().getIntegers().read(0);
+    else
+      blockChangeAckId = -1;
 
     // Block break; left-click
     // Let's not go into as much detail as to figure out whether the block actually broke, just update it regardless.
@@ -74,7 +80,7 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
         position.getX(), position.getY(), position.getZ()
       );
 
-      doCancel = session.onTryBlockManipulate(interactionLocation);
+      session.onTryBlockManipulate(interactionLocation, blockChangeAckId);
       wasLeft = true;
     }
 
@@ -97,12 +103,13 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
       if (doesBuild) {
         var blockFace = protocolLibDirectionToBlockPosition(movingPosition.getDirection());
 
-        doCancel = session.onTryBlockManipulate(
+        session.onTryBlockManipulate(
           interactionLocation.clone().add(
             blockFace.getModX(),
             blockFace.getModY(),
             blockFace.getModZ()
-          )
+          ),
+          blockChangeAckId
         );
 
         // Force inventory-update, as to re-set the stack-size
@@ -110,21 +117,15 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener {
       }
 
       else
-        doCancel = session.onTryBlockManipulate(interactionLocation);
-
-      wasLeft = false;
+        session.onTryBlockManipulate(interactionLocation, blockChangeAckId);
     }
 
-    // USE_ITEM -> Interaction into air with item in hand, just cancel
-    else {
-      event.setCancelled(true);
-      return;
-    }
-
-    if (!doCancel)
-      return;
+    // else: USE_ITEM -> Interaction into air with item in hand, just cancel
 
     event.setCancelled(true);
+
+    if (interactionLocation == null)
+      return;
 
     // Since this is called based on received packets, and interactions may fire multiple times
     // within a short time-span, debounce relaying this call to the underlying implementation.
