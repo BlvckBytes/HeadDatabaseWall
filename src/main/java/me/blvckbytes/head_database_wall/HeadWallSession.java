@@ -209,6 +209,10 @@ public class HeadWallSession {
     return headByLocationHash.get(fastCoordinateHash(target));
   }
 
+  public boolean areCoordinatesPartOfSession(int x, int y, int z) {
+    return restoreRoutineByLocationHash.containsKey(fastCoordinateHash(x, y, z));
+  }
+
   public void onTryBlockManipulate(Location location) {
     var restoreRoutine = restoreRoutineByLocationHash.get(fastCoordinateHash(location));
 
@@ -256,6 +260,8 @@ public class HeadWallSession {
   }
 
   public void close() {
+    // TODO: Only sending block-data will result in a loss of block-state...
+
     if (didInitializeAuxiliaryLocations) {
       didInitializeAuxiliaryLocations = false;
 
@@ -289,13 +295,14 @@ public class HeadWallSession {
   }
 
   private long fastCoordinateHash(Location location) {
+    return fastCoordinateHash(location.getBlockX(), location.getBlockY(), location.getBlockZ());
+  }
+
+  private long fastCoordinateHash(int x, int y, int z) {
     // y in [-64;320] - adding 64 will result in [0;384], thus 9 bits will suffice
     // long has 64 bits, (64-9)/2 = 27.5, thus, let's reserve 10 bits for y, and add 128, for future-proofing
     // 27 bits per x/z axis, with one sign-bit, => +- 67,108,864
     // As far as I know, the world is limited to around +- 30,000,000 - so we're fine
-    int x = location.getBlockX();
-    int y = location.getBlockY();
-    int z = location.getBlockZ();
 
     return (
       // 2^10 - 1 = 0x3FF

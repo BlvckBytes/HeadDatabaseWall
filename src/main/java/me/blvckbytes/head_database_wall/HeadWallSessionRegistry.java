@@ -56,8 +56,9 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener, 
       // Blocking all packets this listener is filtering for when in a session, as to avoid
       // unintentional updates due to events on the server, caused externally.
       PacketType.Play.Server.BLOCK_CHANGE,
-      PacketType.Play.Server.MULTI_BLOCK_CHANGE,
       PacketType.Play.Server.TILE_ENTITY_DATA
+      // TODO: A MULTI_BLOCK_CHANGE could cause block-changes within a session, but that's a bit more
+      //       involved to get right, as the packet would need to have it's contents patched
     );
 
     var blockDataClass = Class.forName(Bukkit.getServer().getClass().getPackageName() + ".block.data.CraftBlockData");
@@ -150,7 +151,16 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener, 
 
   @Override
   public void onPacketSending(PacketEvent event) {
-    tryAccessSession(event.getPlayer(), session -> event.setCancelled(true));
+    try {
+      tryAccessSession(event.getPlayer(), session -> {
+        var position = event.getPacket().getBlockPositionModifier().read(0);
+
+        if (session.areCoordinatesPartOfSession(position.getX(), position.getY(), position.getZ()))
+          event.setCancelled(true);
+      });
+    } catch (Exception e) {
+      logger.log(Level.SEVERE, "An error occurred while trying to handle a sent packet", e);
+    }
   }
 
   @Override
@@ -241,7 +251,7 @@ public class HeadWallSessionRegistry extends PacketAdapter implements Listener, 
         lastProcessedInteractionStamp = System.currentTimeMillis();
       });
     } catch (Exception e) {
-      logger.log(Level.SEVERE, "An error occurred while trying to handle a sent packet", e);
+      logger.log(Level.SEVERE, "An error occurred while trying to handle a received packet", e);
     }
   }
 
